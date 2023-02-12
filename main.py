@@ -4,19 +4,30 @@ from sys import argv
 from datetime import date, time, timedelta, datetime
 from time import sleep
 from termcolor import colored
+from google.oauth2.service_account import Credentials
+from googleapiclient.errors import HttpError
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
 import calendar, json, re
+import schedule
+import time
+import threading
 import sys, os
-import colorama  # needed to display color windows's terminal
+import colorama
 import telebot
 
+#gestione id-pass login e bot
+SERVICE_ACCOUNT_FILE = 'client_secret_769971844746-2qn00ltihibfvtrje4htdd676852ghno.apps.googleusercontent.com'
+CALENDAR_ID = 'cef82a8362167dbcf8f6b21d22db000c8118ed398e4affea76c56db582b4e07f@group.calendar.google.com'
+CLIENT_ID = '769971844746-2qn00ltihibfvtrje4htdd676852ghno.apps.googleusercontent.com'
+CLIENT_SECRET = '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'
+SCOPES = ['https://www.googleapis.com/auth/calendar']
 token = os.environ['TOKEN']
 user = os.environ['Username']
 password = os.environ['Password']
-bot = telebot.TeleBot(token)
 colorama.init()
-
-MAIL_REGEX = "^[\w\-\.]+@itsrizzoli.it$"
-
+bot = telebot.TeleBot(token)
+id_list=[]
 
 # "info" is a list of json
 def extract_info(info):
@@ -83,6 +94,7 @@ def extract_info(info):
   return lessons
 
 
+# stampa a terminale json "lessons"
 def print_lessons(lessons):
 
   lessons.sort(
@@ -134,11 +146,27 @@ def print_lessons(lessons):
     print(colored(f"\t\t{room}\rRoom: ", color))
 
 
+def get_file_content(file_name):
+  username = ""
+
+  exe_path = os.path.expanduser('~')
+  file_name = f"{exe_path}/{file_name}"
+
+  with open(file_name, "r") as f:
+    username = f.readline()
+
+  return username
+
+
+def get_input_email():
+  return user
+
 
 def swap(obj1, obj2):
   return obj2, obj1
 
 
+# check data e username
 def check_argv():
 
   start_date = ""
@@ -256,31 +284,6 @@ def check_argv():
   return start_date, end_date, username
 
 
-def get_file_content(file_name):
-  username = ""
-
-  exe_path = os.path.expanduser('~')
-  file_name = f"{exe_path}/{file_name}"
-
-  with open(file_name, "r") as f:
-    username = f.readline()
-
-  return username
-
-
-def get_input_email():
-  username = ""
-  while True:
-    username = user
-
-    if re.match(MAIL_REGEX, username) != None:
-      break
-
-    print(colored("Invalid mail", "red"))
-    sleep(1)
-  return username
-
-
 def write_to_file(file_name, text):
 
   exe_path = os.path.expanduser('~')
@@ -337,16 +340,14 @@ def correct_dates(start_date, end_date):
       days=8
     )  # default is +7, but the register doesn't count the last day provided when fetching the db
 
-  if "date" in str(type(start_date)):
-    start_date = f"{start_date.year}-{start_date.month}-{start_date.day}"
-  if "date" in str(type(end_date)):
-    end_date = f"{end_date.year}-{end_date.month}-{end_date.day}"
-
+  # if "date" in str(type(start_date)):
+  #   start_date = f"{start_date.year}-{start_date.month}-{start_date.day}"
+  # if "date" in str(type(end_date)):
+  #   end_date = f"{end_date.year}-{end_date.month}-{end_date.day}"
+  print(start_date)
+  print(end_date)
   return start_date, end_date
 
-
-# todo: controllare che l'id delle lezioni corrisponda con le lezioni nella sezione "presenze"
-# todo: collezionare i dati necessari(ore presenza, id lezione) in un json e ritornare una lista di json
 
 def get_presence(session):
   presence_url = "https://itsar.registrodiclasse.it/geopcfp2/json/data_tables_ricerca_registri.asp"
@@ -359,64 +360,8 @@ def get_presence(session):
   res = res.json()
 
 
-def bot_print(lessons, id):
-  lessons.sort(
-    key=lambda l: (int(l["day"][0]), int(l["day"][1]), int(l["day"][2])))
-  for l in lessons:
-    canPrintDay = True
-    symbol, weekday, day, month, start, end, color = l["symbol"], l[
-      "weekday"], l["day"], l["month"], l["start"], l["end"], l["color"]
-    teacher, subject, room = l["teacher"], l["subject"], l["room"]
-    type_ = l["type"]
-    previous_lesson_i = lessons.index(l) - 1
-
-    if previous_lesson_i >= 0:
-      previous_lesson = lessons[previous_lesson_i]
-      if previous_lesson["day"] == day:
-        canPrintDay = False
-
-    if not canPrintDay:
-      # bot.reply_to(message,{teacher})
-      orario = f"*{start}-{end}*"
-      docente = f"\n{teacher}"
-      materia = f"\n{subject}"
-      stanza = f"\n{room}"
-      stringa = orario + docente + materia + stanza
-      bot.send_message(id, stringa, parse_mode='Markdown')
-      continue
-
-    data = f"\n{symbol} {weekday[:3]} {day[2]} {month} {day[0]} {symbol}"
-    bot.send_message(id, data, parse_mode='Markdown')
-    orario = f"*{start}-{end}*"
-    docente = f"\n{teacher}"
-    materia = f"\n{subject}"
-    stanza = f"\n{room}"
-    stringa2 = orario + docente + materia + stanza
-    bot.send_message(id, stringa2, parse_mode='Markdown')
-def botScript(lessons):
-
-  @bot.message_handler(commands=['start', 'help'])
-  def send_welcome(message):
-    bot.reply_to(message, "Benvenuto")
-
-  @bot.message_handler(commands=['registro'])
-  def echo_registro(message):
-    id = message.from_user.id
-    bot_print(lessons, id)
-
-  @bot.message_handler(commands=['news'])
-  def echo_news(message):
-    id = message.from_user.id
-    # utenti.append(id)
-    # print(id)
-    userFile = open('userFile.txt', 'w')
-    print(id, file=userFile)
-
-  bot.infinity_polling()
-
-def main():
-  start_date, end_date, username = check_argv()
-
+def requestGeop(start_date, end_date):
+  username = user
   start_date, end_date = correct_dates(start_date, end_date)
 
   site = "https://itsar.registrodiclasse.it"
@@ -480,14 +425,144 @@ def main():
   try:
     res = session.get(url)
     lessons = extract_info(res.json())
+    print(lessons)
     print_lessons(lessons) if len(lessons) > 0 else print(colored(f"No lessons found", "yellow", attrs=["underline"]))
-    botScript(lessons)
   except ConnectionError as e:
     print(colored("Failed to connect. Check your internet connection", "red"))
   except Exception as e:
     print(e)
     sys.exit(1)
+  return lessons
 
+
+def bot_print(lessons, id):
+
+  lessons.sort(
+    key=lambda l: (int(l["day"][0]), int(l["day"][1]), int(l["day"][2])))
+  for l in lessons:
+    canPrintDay = True
+    symbol, weekday, day, month, start, end, color = l["symbol"], l[
+      "weekday"], l["day"], l["month"], l["start"], l["end"], l["color"]
+    teacher, subject, room = l["teacher"], l["subject"], l["room"]
+    type_ = l["type"]
+    previous_lesson_i = lessons.index(l) - 1
+
+    if previous_lesson_i >= 0:
+      previous_lesson = lessons[previous_lesson_i]
+      if previous_lesson["day"] == day:
+        canPrintDay = False
+
+    if not canPrintDay:
+      # bot.reply_to(message,{teacher})
+      orario = f"*{start}-{end}*"
+      docente = f"\n{teacher}"
+      materia = f"\n{subject}"
+      stanza = f"\n{room}"
+      stringa = orario + docente + materia + stanza
+      bot.send_message(id, stringa, parse_mode='Markdown')
+      continue
+
+    data = f"\n{symbol} {weekday[:3]} {day[2]} {month} {day[0]} {symbol}"
+    bot.send_message(id, data, parse_mode='Markdown')
+    orario = f"*{start}-{end}*"
+    docente = f"\n{teacher}"
+    materia = f"\n{subject}"
+    stanza = f"\n{room}"
+    stringa2 = orario + docente + materia + stanza
+    bot.send_message(id, stringa2, parse_mode='Markdown')
+
+
+def bot_print_day(lessons, id):
+  lessons.sort(
+    key=lambda l: (int(l["day"][0]), int(l["day"][1]), int(l["day"][2])))
+  for l in lessons:
+    canPrintDay = True
+    symbol, weekday, day, month, start, end, color = l["symbol"], l[
+      "weekday"], l["day"], l["month"], l["start"], l["end"], l["color"]
+    teacher, subject, room = l["teacher"], l["subject"], l["room"]
+    type_ = l["type"]
+    previous_lesson_i = lessons.index(l) - 1
+
+    if previous_lesson_i >= 0:
+      previous_lesson = lessons[previous_lesson_i]
+      if previous_lesson["day"] == day:
+        canPrintDay = False
+
+    if not canPrintDay:
+      # bot.reply_to(message,{teacher})
+      orario = f"*{start}-{end}*"
+      docente = f"\n{teacher}"
+      materia = f"\n{subject}"
+      stanza = f"\n{room}"
+      stringa = orario + docente + materia + stanza
+      bot.send_message(id, stringa, parse_mode='Markdown')
+      continue
+
+    data = f"\n{symbol} {weekday[:3]} {day[2]} {month} {day[0]} {symbol}"
+    bot.send_message(id, data, parse_mode='Markdown')
+    orario = f"*{start}-{end}*"
+    docente = f"\n{teacher}"
+    materia = f"\n{subject}"
+    stanza = f"\n{room}"
+    stringa2 = orario + docente + materia + stanza
+    bot.send_message(id, stringa2, parse_mode='Markdown')
+
+
+def newsletter():
+    for utente in id_list:
+        bot_print(day,utente)
+  # print("OK NEWS FUNZIONA")
+#   with open('userFile.txt','r') as file:
+#     for utente in file:
+#       utente = utente.strip()
+#       bot_print(lessons,utente)
+
+
+def checkDB(oldDB):
+  newDB = requestGeop("", "")
+  if newDB != oldDB:
+    newsletter(newDB)
+    oldDB = newDB
+
+
+def handle_messages():
+  
+    @bot.message_handler(commands=['start', 'help'])
+    def handle_start(message):
+      bot.reply_to(message, "Benvenuto")
+    
+    @bot.message_handler(commands=['day'])
+    def handle_day(message):
+      id = message.from_user.id
+      bot_print(day, id)
+
+    @bot.message_handler(commands=['registro'])
+    def handle_registro(message):
+      id = message.from_user.id
+      bot_print(oldDB, id)
+
+    @bot.message_handler(commands=['news'])
+    def echo_news(message):
+      id = message.from_user.id
+      with open("userFile.txt", "a") as file:
+        if id not in id_list:
+          id_list.append(id)
+          file.write(str(id) + "\n")
+        
+    bot.polling()
+
+def main():
+    global oldDB
+    global day
+    oldDB = requestGeop("", "")
+    day = requestGeop(date.today(), date.today()+timedelta(days=2))
+    schedule.every(30).minutes.do(checkDB,oldDB)
+    schedule.every().day.at("22:57").do(newsletter)
+    threading.Thread(target=handle_messages).start()
+    
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
 
 if __name__ == '__main__':
   main()

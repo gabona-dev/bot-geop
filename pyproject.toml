@@ -15,6 +15,10 @@ telepot = "^12.7"
 colorama = "^0.4.6"
 termcolor = "^2.1.0"
 schedule = "^1.1.0"
+telegram = "^0.0.1"
+google-api-python-client = "^2.77.0"
+xds-protos = "^0.0.11"
+google-auth-oauthlib = "^1.0.0"
 
 [tool.poetry.dev-dependencies]
 debugpy = "^1.6.2"
