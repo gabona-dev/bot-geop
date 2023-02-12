@@ -557,7 +557,7 @@ def main():
     oldDB = requestGeop("", "")
     day = requestGeop(date.today(), date.today()+timedelta(days=2))
     schedule.every(30).minutes.do(checkDB,oldDB)
-    schedule.every().day.at("22:57").do(newsletter)
+    schedule.every().day.at("06:00").do(newsletter)
     threading.Thread(target=handle_messages).start()
     
     while True:
