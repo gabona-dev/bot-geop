@@ -4,10 +4,6 @@ from sys import argv
 from datetime import date, time, timedelta, datetime
 from time import sleep
 from termcolor import colored
-from google.oauth2.service_account import Credentials
-from googleapiclient.errors import HttpError
-from googleapiclient.discovery import build
-from google_auth_oauthlib.flow import InstalledAppFlow
 import calendar, json, re
 import schedule
 import time
@@ -17,11 +13,7 @@ import colorama
 import telebot
 
 #gestione id-pass login e bot
-SERVICE_ACCOUNT_FILE = 'client_secret_769971844746-2qn00ltihibfvtrje4htdd676852ghno.apps.googleusercontent.com'
-CALENDAR_ID = 'cef82a8362167dbcf8f6b21d22db000c8118ed398e4affea76c56db582b4e07f@group.calendar.google.com'
-CLIENT_ID = '769971844746-2qn00ltihibfvtrje4htdd676852ghno.apps.googleusercontent.com'
-CLIENT_SECRET = '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'
-SCOPES = ['https://www.googleapis.com/auth/calendar']
+
 token = os.environ['TOKEN']
 user = os.environ['Username']
 password = os.environ['Password']
@@ -29,14 +21,18 @@ colorama.init()
 bot = telebot.TeleBot(token)
 id_list=[]
 
-# "info" is a list of json
+with open('userFile.txt') as file:
+    for line in file:
+        line = line.strip()
+        id_list.append(int(line))
+      
 def extract_info(info):
 
   WEEKDAY = [
     "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
     "Sunday"
   ]
-  SYMBOLS = {"ok": "✔", "dash": "-", "now": "¤", "cross": "x"}
+  SYMBOLS = {"ok": "🟢", "dash": "-", "now": "¤", "cross": "x"}
 
   lessons = [
   ]  # list of dictionaries. used to sort the lessons before displaying them
@@ -344,8 +340,9 @@ def correct_dates(start_date, end_date):
   #   start_date = f"{start_date.year}-{start_date.month}-{start_date.day}"
   # if "date" in str(type(end_date)):
   #   end_date = f"{end_date.year}-{end_date.month}-{end_date.day}"
-  print(start_date)
-  print(end_date)
+  
+  # print(start_date)
+  # print(end_date)
   return start_date, end_date
 
 
@@ -425,8 +422,8 @@ def requestGeop(start_date, end_date):
   try:
     res = session.get(url)
     lessons = extract_info(res.json())
-    print(lessons)
-    print_lessons(lessons) if len(lessons) > 0 else print(colored(f"No lessons found", "yellow", attrs=["underline"]))
+    # print(lessons)
+    # print_lessons(lessons) if len(lessons) > 0 else print(colored(f"No lessons found", "yellow", attrs=["underline"]))
   except ConnectionError as e:
     print(colored("Failed to connect. Check your internet connection", "red"))
   except Exception as e:
@@ -454,115 +451,86 @@ def bot_print(lessons, id):
 
     if not canPrintDay:
       # bot.reply_to(message,{teacher})
-      orario = f"*{start}-{end}*"
-      docente = f"\n{teacher}"
-      materia = f"\n{subject}"
-      stanza = f"\n{room}"
+      orario = f"⏰*{start}-{end}*⏰"
+      docente = f"\n👨‍🏫{teacher}"
+      materia = f"\n📓{subject}"
+      stanza = f"\n🏢{room}"
       stringa = orario + docente + materia + stanza
+      if type_ == "esame":
+        tipo = "\n\n⚠️*ESAME*⚠️\n\n"
+        stringa = tipo + orario + docente + materia + stanza + tipo
       bot.send_message(id, stringa, parse_mode='Markdown')
       continue
 
     data = f"\n{symbol} {weekday[:3]} {day[2]} {month} {day[0]} {symbol}"
     bot.send_message(id, data, parse_mode='Markdown')
-    orario = f"*{start}-{end}*"
-    docente = f"\n{teacher}"
-    materia = f"\n{subject}"
-    stanza = f"\n{room}"
+    orario = f"⏰*{start}-{end}*⏰"
+    docente = f"\n👨‍🏫{teacher}"
+    materia = f"\n📓{subject}"
+    stanza = f"\n🏢{room}"
     stringa2 = orario + docente + materia + stanza
-    bot.send_message(id, stringa2, parse_mode='Markdown')
-
-
-def bot_print_day(lessons, id):
-  lessons.sort(
-    key=lambda l: (int(l["day"][0]), int(l["day"][1]), int(l["day"][2])))
-  for l in lessons:
-    canPrintDay = True
-    symbol, weekday, day, month, start, end, color = l["symbol"], l[
-      "weekday"], l["day"], l["month"], l["start"], l["end"], l["color"]
-    teacher, subject, room = l["teacher"], l["subject"], l["room"]
-    type_ = l["type"]
-    previous_lesson_i = lessons.index(l) - 1
-
-    if previous_lesson_i >= 0:
-      previous_lesson = lessons[previous_lesson_i]
-      if previous_lesson["day"] == day:
-        canPrintDay = False
-
-    if not canPrintDay:
-      # bot.reply_to(message,{teacher})
-      orario = f"*{start}-{end}*"
-      docente = f"\n{teacher}"
-      materia = f"\n{subject}"
-      stanza = f"\n{room}"
-      stringa = orario + docente + materia + stanza
-      bot.send_message(id, stringa, parse_mode='Markdown')
-      continue
-
-    data = f"\n{symbol} {weekday[:3]} {day[2]} {month} {day[0]} {symbol}"
-    bot.send_message(id, data, parse_mode='Markdown')
-    orario = f"*{start}-{end}*"
-    docente = f"\n{teacher}"
-    materia = f"\n{subject}"
-    stanza = f"\n{room}"
-    stringa2 = orario + docente + materia + stanza
+    if type_ == "esame":
+      tipo = "\n\n⚠️*ESAME*⚠️\n\n"
+      stringa2 = tipo + orario + docente + materia + stanza + tipo
     bot.send_message(id, stringa2, parse_mode='Markdown')
 
 
 def newsletter():
-    for utente in id_list:
-        bot_print(day,utente)
-  # print("OK NEWS FUNZIONA")
-#   with open('userFile.txt','r') as file:
-#     for utente in file:
-#       utente = utente.strip()
-#       bot_print(lessons,utente)
-
+  for utente in id_list:
+    bot_print(day,utente)
 
 def checkDB(oldDB):
   newDB = requestGeop("", "")
-  if newDB != oldDB:
-    newsletter(newDB)
+  
+  if oldDB != newDB:
+    # print(newDB)
+    # print("\nSPAZIO\n")
+    # print(oldDB)
+    # print("\n I TESTI SONO DIVERSI \n")
     oldDB = newDB
-
+    global day
+    day = requestGeop(date.today(), date.today()+timedelta(days=2))
+    # newsletter()
 
 def handle_messages():
   
-    @bot.message_handler(commands=['start', 'help'])
-    def handle_start(message):
-      bot.reply_to(message, "Benvenuto")
-    
-    @bot.message_handler(commands=['day'])
-    def handle_day(message):
-      id = message.from_user.id
-      bot_print(day, id)
+  @bot.message_handler(commands=['start', 'help'])
+  def handle_start(message):
+    bot.reply_to(message, "Benvenuto")
+  
+  @bot.message_handler(commands=['day'])
+  def handle_day(message):
+    id = message.from_user.id
+    bot_print(day, id)
 
-    @bot.message_handler(commands=['registro'])
-    def handle_registro(message):
-      id = message.from_user.id
-      bot_print(oldDB, id)
+  @bot.message_handler(commands=['registro'])
+  def handle_registro(message):
+    id = message.from_user.id
+    bot_print(oldDB, id)
 
-    @bot.message_handler(commands=['news'])
-    def echo_news(message):
-      id = message.from_user.id
-      with open("userFile.txt", "a") as file:
-        if id not in id_list:
-          id_list.append(id)
-          file.write(str(id) + "\n")
-        
-    bot.polling()
-
+  @bot.message_handler(commands=['news'])
+  def echo_news(message):
+    id = message.from_user.id
+    with open("userFile.txt", "a") as file:
+      if id not in id_list:
+        id_list.append(id)
+        file.write(str(id) + "\n")
+  bot.polling()
+  
 def main():
-    global oldDB
-    global day
-    oldDB = requestGeop("", "")
-    day = requestGeop(date.today(), date.today()+timedelta(days=2))
-    schedule.every(30).minutes.do(checkDB,oldDB)
-    schedule.every().day.at("06:00").do(newsletter)
-    threading.Thread(target=handle_messages).start()
-    
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+  global oldDB
+  global day
+  
+  oldDB = requestGeop("", "")
+  day = requestGeop(date.today(), date.today()+timedelta(days=2))
+  
+  schedule.every(30).minutes.do(checkDB,oldDB)
+  schedule.every().day.at("06:00").do(newsletter)
+  threading.Thread(target=handle_messages).start()
+  
+  while True:
+    schedule.run_pending()
+    time.sleep(1)
 
 if __name__ == '__main__':
   main()
