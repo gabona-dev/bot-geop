@@ -29,7 +29,7 @@ class DB:
         if "SELECT" in query.upper():
             return res.fetchone()      # result of the query
 
-        elif "INSERT" in query.upper():
+        elif "INSERT" in query.upper() or "UPDATE" in query.upper():
             self.conn.commit()
 
         return None

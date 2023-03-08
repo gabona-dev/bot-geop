@@ -29,15 +29,9 @@ class Bot:
 
         self.db = DB()
 
-        # load user to send automatic messages to
-        with open('userFile.txt') as file:
-            for line in file:
-                line = line.strip()
-                self.id_list.append(int(line))
-
         # scheduling newsletter and updates of lessons
         schedule.every(30).minutes.do(self.updateDB)
-        schedule.every().day.at("06:00").do(self.newsletter)
+        schedule.every().day.at("15:19").do(self.newsletter)
         threading.Thread(target=self.handle_messages).start()
 
 
@@ -67,32 +61,45 @@ class Bot:
             self.bot.send_message(message.chat.id, "Account non configurato: credenziali errate.\nPer riprovare esegui il comando /start")
             return
 
-        self.save_user_info(message.chat.id, email, psw, course)
+        self.save_user_info(message.chat.id, course, email, psw)
         self.bot.send_message(message.chat.id, 'Account configurato con successo!')
 
 
     # Funzione per salvare le informazioni dell'utente nel database
-    def save_user_info(self, user_id, email, psw, course):
+    def save_user_info(self, user_id, course, email="", psw="", login_credentials=True):
         self.db.connect()
 
-        # if user does not already exists in the db then insert it
-        if self.user_already_exists_in('users_login', user_id):
-            self.db.query(
-                'UPDATE users_login SET course=? WHERE id=?;',
-                [course, user_id]
-            )
-        else:
-            self.db.query(
-                'INSERT INTO users_login VALUES (?,?,?,?);', 
-                (user_id, email, psw, course)
-            )
+        if login_credentials:
+            # if user does not already exists in the db then insert it
+            if self.user_already_exists_in('users_login', user_id):
+                self.db.query(
+                    'UPDATE users_login SET course=? WHERE id=?;',
+                    [course, user_id]
+                )
+            else:
+                self.db.query(
+                    'INSERT INTO users_login VALUES (?,?,?,?);', 
+                    (user_id, email, psw, course)
+                )
 
         # if user does not exists in the "user_newsletter" table then insert it
         if not self.user_already_exists_in('users_newsletter', user_id):
-            self.db.query('INSERT INTO users_newsletter VALUES (?, ?, ?);', [{user_id}, course, False])
+            self.db.query('INSERT INTO users_newsletter VALUES (?, ?, ?);', [user_id, course, False])
         
         self.db.close()
         return
+    
+    
+    def get_courses(self):
+        lines = []
+        with open("courses.txt", "r") as file:
+            lines = file.readlines()
+
+            for i in range(len(lines)):
+                lines[i] = lines[i].replace('\n', '')
+        
+        return lines
+
         
            
     # Tastiera inline per la configurazione dell'account
@@ -100,11 +107,11 @@ class Bot:
 
         keyboard = InlineKeyboardMarkup(row_width=2)
          
-        with open("courses.txt", "r") as file:
-            lines = file.readlines()
-            #! The number of courses must be even 
-            for i in range(0, len(lines)-1, 2):   # i add 2 buttons in one call, otherwise every button is displayed in a single row
-                keyboard.add(InlineKeyboardButton(f'{lines[i]}', callback_data=f'{lines[i]}'), InlineKeyboardButton(f'{lines[i+1]}', callback_data=f'{lines[i+1]}'))
+        courses = self.get_courses()
+
+        #! The number of courses must be even 
+        for i in range(0, len(courses)-1, 2):   # i add 2 buttons in one call, otherwise every button is displayed in a single row
+            keyboard.add(InlineKeyboardButton(f'{courses[i]}', callback_data=f'{courses[i]}'), InlineKeyboardButton(f'{courses[i+1]}', callback_data=f'{courses[i+1]}'))
             
         return keyboard
 
@@ -130,17 +137,21 @@ class Bot:
         def callback_handler(call):
 
             self.db.connect()
-            res = self.db.query("SELECT * FROM users_login WHERE course=?", [call.data,])
+            res = self.db.query("SELECT * FROM users_login WHERE course=?;", [call.data,])
 
-            if res != None:
-                self.db.query("INSERT INTO users_newsletter VALUES (?, ?, ?)", [call.message.chat.id, call.data, False])
-                self.bot.send_message(call.message.chat.id, "Account configurato!")
+            # if there isn't an account configured for that course, ask for the credentials
+            if res == None:
                 self.db.close()
+                self.bot.send_message(call.message.chat.id, 'Nessun account configurato per questo corso, fornisci le seguenti informazioni:\n\nEmail:')
+                self.bot.register_next_step_handler(call.message, self.get_email, call.data)
                 return
             
+            # save user into "users_newsletter" table
+            self.save_user_info(call.message.chat.id, call.data, login_credentials=False)
+            
+            self.bot.send_message(call.message.chat.id, "Account configurato!")
             self.db.close()
-            self.bot.send_message(call.message.chat.id, 'Nessun account configurato per questo corso, fornisci le seguenti informazioni:\n\nEmail:')
-            self.bot.register_next_step_handler(call.message, self.get_email, call.data)
+            return
 
 
         @self.bot.message_handler(commands=['day'])
@@ -154,36 +165,52 @@ class Bot:
             self.bot_print(self.oldDB, id)
 
         @self.bot.message_handler(commands=['news'])
-        def echo_news(message, course):
+        def echo_news(message):
             id = message.from_user.id
             self.db.connect()
-            res = self.db.query("SELECT id FROM users_newsletter WHERE id=?", [id])
-
-            if res == None:
-                self.db.query("INSERT INTO users_newsletter VALUES (?, ?, ?)", [id, course, False])
+            
+            # no need to check if the user is not present, because it is automatically inserted into the db during the config stage
+            self.db.query("UPDATE users_newsletter SET can_send_news = 1 WHERE id = ?;", [id])
+            print(f"Set can_send_news to True to user {id}")
 
             self.db.close()
-            
+
         self.bot.polling()
 
 
     def newsletter(self):
+
+        courses = self.get_courses()
         self.db.connect()
-        self.id_list = self.db.query("SELECT id FROM users_newsletter")
+
+        for course in courses:
+            users = self.db.query("SELECT id FROM users_newsletter WHERE course=? and can_send_news=1;", [course])
+            res = self.db.query("SELECT email, psw FROM users_login WHERE course=?;", [course])
+            if res == None: continue
+
+            self.user, self.password = res[0], res[1]
+            self.register.set_credential(self.user, self.password)
+            self.updateDB(just_today=True)
+
+            for id in users:
+                self.bot_print(self.day, int(id))
+            print(f"Sent news to {course} course")
+            
+
         self.db.close()
 
-        for user in self.id_list:
-            self.bot_print(self.day, user)
+        return
 
     # Funzione per verificare se le informazioni dell'utente sono già state fornite
     def user_already_exists_in(self, table, user_id):
-        res = self.db.query(f"SELECT * FROM {table} WHERE id=?", [user_id,])
+        res = self.db.query(f"SELECT * FROM {table} WHERE id=?;", [user_id,])
         return res != None
 
 
-    def updateDB(self):
-        newDB = self.register.requestGeop()
-        self.oldDB = newDB
+    def updateDB(self, just_today=False):
+        if not just_today:
+            newDB = self.register.requestGeop()
+            self.oldDB = newDB
         self.day = self.register.requestGeop(date.today(), date.today()+timedelta(days=1))
 
 
