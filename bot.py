@@ -7,6 +7,8 @@ from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from register import Register
 from time import sleep
 from db import DB
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
 
 class Bot:
     bot = None
@@ -20,6 +22,7 @@ class Bot:
     db = None
     __course = ""
     __section = ""
+    __key = "" # used to crypt and decrypt passwords
 	
     def __init__(self):
         # create bot
@@ -27,6 +30,8 @@ class Bot:
 
         self.register = Register(self.user, self.password)
         self.bot = telebot.TeleBot(self.token)
+
+        self.__key = os.environ["key"].encode()
 
         self.db = DB()
 
@@ -64,6 +69,7 @@ class Bot:
             self.bot.send_message(message.chat.id, "Account non configurato: credenziali errate.\nPer riprovare esegui il comando /start")
             return
 
+        psw = self.encrypt_message(self.__key, psw)
         self.save_user_info(message.chat.id, email, psw)
         self.bot.send_message(message.chat.id, 'Account configurato con successo!')
 
@@ -196,7 +202,10 @@ class Bot:
                 self.db.close()
                 return
             
-            self.register.set_credential(res[0], res[1])
+            self.user, self.password = res[0], res[1]
+            self.password = self.decrypt_message(self.__key, self.password)
+            
+            self.register.set_credential(self.user, self.password)
             self.updateDB(just_today=True)
 
             self.db.close()
@@ -223,7 +232,10 @@ class Bot:
                 self.db.close()
                 return
             
-            self.register.set_credential(res[0], res[1])
+            self.user, self.password = res[0], res[1]
+            self.password = self.decrypt_message(self.__key, self.password)
+
+            self.register.set_credential(self.user, self.password)
             self.updateDB()
 
             self.db.close()
@@ -270,8 +282,10 @@ class Bot:
                     users = self.db.query("SELECT id FROM users_newsletter WHERE course=? and can_send_news=1 and section=? and year=?;", [course, section, year])
 
                     self.user, self.password = login_user[0], login_user[1]
-                    self.updateDB(just_today=True)
+                    self.password = self.decrypt_message(self.__key, self.password)
+
                     self.register.set_credential(self.user, self.password)
+                    self.updateDB(just_today=True)
 
                     for id in users:
                         self.bot_print(self.day, int(id))
@@ -356,3 +370,15 @@ class Bot:
     def delete_msg(self, message):
         sleep(10)
         self.bot.delete_message(message.chat.id, message.message_id)
+
+    def encrypt_message(self, key, message):
+        iv = get_random_bytes(AES.block_size)
+        cipher = AES.new(key, AES.MODE_CFB, iv)
+        ciphertext = cipher.encrypt(message.encode('utf-8'))
+        return (iv + ciphertext)
+
+    def decrypt_message(self, key, ciphertext):
+        iv = ciphertext[:AES.block_size]
+        cipher = AES.new(key, AES.MODE_CFB, iv)
+        plaintext = cipher.decrypt(ciphertext[AES.block_size:]).decode('utf-8')
+        return plaintext
