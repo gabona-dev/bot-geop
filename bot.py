@@ -51,6 +51,8 @@ class Bot:
     def get_password(self, message, email):
         psw = message.text
 
+        threading.Thread(target=self.delete_msg, args=[message]).start()
+
         self.register.set_credential(email, psw)
         self.updateDB()     # updates oldDB variable
 
@@ -350,3 +352,7 @@ class Bot:
         
     def send_configuration_message(self, user_id):
         self.bot.send_message(user_id, "Configura il tuo account con il comando /start per usare i comandi")
+
+    def delete_msg(self, message):
+        sleep(10)
+        self.bot.delete_message(message.chat.id, message.message_id)
