@@ -209,7 +209,7 @@ class Bot:
 
             res = self.db.query("SELECT course, section FROM users_newsletter WHERE id=?", [user_id])
             if res == None:
-                self.send_configuration_message()
+                self.send_configuration_message(user_id)
                 self.db.close()
                 return
                   
@@ -217,7 +217,7 @@ class Bot:
 
             res = self.db.query("SELECT email, psw FROM users_login WHERE course=? AND section=?", [user_course, user_section])
             if res == None:
-                self.send_configuration_message()
+                self.send_configuration_message(user_id)
                 self.db.close()
                 return
             
@@ -230,11 +230,17 @@ class Bot:
 
         @self.bot.message_handler(commands=['news'])
         def echo_news(message):
-            id = message.from_user.id
+            user_id = message.from_user.id
             self.db.connect()
+
+            res = self.db.query("SELECT * FROM users_newsletter WHERE id=?", [user_id])
+            if res == None:
+                self.send_configuration_message(user_id)
+                self.db.close()
+                return
             
             # no need to check if the user is not present, because it is automatically inserted into the db during the config stage
-            self.db.query("UPDATE users_newsletter SET can_send_news = 1 WHERE id = ?;", [id])
+            self.db.query("UPDATE users_newsletter SET can_send_news = 1 WHERE id = ?;", [user_id])
 
             self.db.close()
 
@@ -342,3 +348,5 @@ class Bot:
         self.db.close()
         return True
         
+    def send_configuration_message(self, user_id):
+        self.bot.send_message(user_id, "Configura il tuo account con il comando /start per usare i comandi")
