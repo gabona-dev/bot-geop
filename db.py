@@ -20,8 +20,8 @@ class DB:
         self.conn = sqlite3.connect(self.db_name)
         self.cur = self.conn.cursor()
 
-        self.cur.execute("CREATE TABLE IF NOT EXISTS users_login(id, email, psw, course)")
-        self.cur.execute("CREATE TABLE IF NOT EXISTS users_newsletter(id, course, can_send_news)")
+        self.cur.execute("CREATE TABLE IF NOT EXISTS users_login(id, email, psw, course, section)")     # section contains year and section ->1A, 2A...
+        self.cur.execute("CREATE TABLE IF NOT EXISTS users_newsletter(id, course, section, can_send_news)")
     
     def query(self, query, values=[]):
         res = self.cur.execute(query, values)

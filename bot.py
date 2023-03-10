@@ -3,7 +3,7 @@ import schedule
 import threading
 import os
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from register import Register
 from time import sleep
 from db import DB
@@ -17,8 +17,9 @@ class Bot:
     day = []
     oldDB = []
     register = None
-    COURSES = {}
     db = None
+    __course = ""
+    __section = ""
 	
     def __init__(self):
         # create bot
@@ -31,7 +32,7 @@ class Bot:
 
         # scheduling newsletter and updates of lessons
         schedule.every(30).minutes.do(self.updateDB)
-        schedule.every().day.at("15:19").do(self.newsletter)
+        schedule.every().day.at("07:00").do(self.newsletter)
         threading.Thread(target=self.handle_messages).start()
 
 
@@ -41,13 +42,13 @@ class Bot:
             sleep(1)
 
     # Ottenere l'indirizzo email dell'utente
-    def get_email(self, message, course):
+    def get_email(self, message):
         email = message.text
         self.bot.send_message(message.chat.id, 'Password:')
-        self.bot.register_next_step_handler(message, self.get_password, email, course)
+        self.bot.register_next_step_handler(message, self.get_password, email)
 
     # Ottenere la password dell'utente
-    def get_password(self, message, email, course):
+    def get_password(self, message, email):
         psw = message.text
 
         self.register.set_credential(email, psw)
@@ -61,30 +62,30 @@ class Bot:
             self.bot.send_message(message.chat.id, "Account non configurato: credenziali errate.\nPer riprovare esegui il comando /start")
             return
 
-        self.save_user_info(message.chat.id, course, email, psw)
+        self.save_user_info(message.chat.id, email, psw)
         self.bot.send_message(message.chat.id, 'Account configurato con successo!')
 
 
     # Funzione per salvare le informazioni dell'utente nel database
-    def save_user_info(self, user_id, course, email="", psw="", login_credentials=True):
+    def save_user_info(self, user_id, email="", psw="", login_credentials=True):
         self.db.connect()
 
         if login_credentials:
             # if user does not already exists in the db then insert it
             if self.user_already_exists_in('users_login', user_id):
                 self.db.query(
-                    'UPDATE users_login SET course=? WHERE id=?;',
-                    [course, user_id]
+                    'UPDATE users_login SET course=?, section=? WHERE id=?;',
+                    [self.__course, self.__section, user_id]
                 )
             else:
                 self.db.query(
-                    'INSERT INTO users_login VALUES (?,?,?,?);', 
-                    (user_id, email, psw, course)
+                    'INSERT INTO users_login VALUES (?, ?, ?, ?, ?);', 
+                    (user_id, email, psw, self.__course, self.__section)
                 )
 
         # if user does not exists in the "user_newsletter" table then insert it
         if not self.user_already_exists_in('users_newsletter', user_id):
-            self.db.query('INSERT INTO users_newsletter VALUES (?, ?, ?);', [user_id, course, False])
+            self.db.query('INSERT INTO users_newsletter VALUES (?, ?, ?, ?);', [user_id, self.__course, self.__section, False])
         
         self.db.close()
         return
@@ -99,8 +100,7 @@ class Bot:
                 lines[i] = lines[i].replace('\n', '')
         
         return lines
-
-        
+ 
            
     # Tastiera inline per la configurazione dell'account
     def create_courses_keyboard(self):
@@ -111,9 +111,22 @@ class Bot:
 
         #! The number of courses must be even 
         for i in range(0, len(courses)-1, 2):   # i add 2 buttons in one call, otherwise every button is displayed in a single row
-            keyboard.add(InlineKeyboardButton(f'{courses[i]}', callback_data=f'{courses[i]}'), InlineKeyboardButton(f'{courses[i+1]}', callback_data=f'{courses[i+1]}'))
-            
+            keyboard.add(
+                InlineKeyboardButton(f'{courses[i]}', callback_data=f'{courses[i]}'),
+                InlineKeyboardButton(f'{courses[i+1]}', callback_data=f'{courses[i+1]}')
+            )        
         return keyboard
+    
+    def create_section_keyboard(self):
+        keyboard = InlineKeyboardMarkup(row_width=2)
+
+        for sec in ["A","B"]:
+            keyboard.add(
+                InlineKeyboardButton("1° anno, sez. "+sec, callback_data="1"+sec), 
+                InlineKeyboardButton("2° anno, sez. "+sec, callback_data="2"+sec)
+            )
+        return keyboard
+                
 
 
     def handle_messages(self):
@@ -121,9 +134,10 @@ class Bot:
         @self.bot.message_handler(commands=['help'])
         def handle_help(message):
             help_msg = \
+            "/start configura il tuo account" + \
             "/help Visualizza questa guida\n" + \
             "/day  Lezione più recente\n" + \
-            "/reg  Lezione da oggi + 7gg\n" + \
+            "/week  Lezione da oggi + 7gg\n" + \
             "/news Notifica alle 7 sulla lezione del giorno"
             
             self.bot.reply_to(message, help_msg)
@@ -136,33 +150,83 @@ class Bot:
         @self.bot.callback_query_handler(func=lambda call: True)
         def callback_handler(call):
 
-            self.db.connect()
-            res = self.db.query("SELECT * FROM users_login WHERE course=?;", [call.data,])
+            if call.data == "1A" or  call.data == "1B" or call.data == "2A" or call.data == "2B":
 
-            # if there isn't an account configured for that course, ask for the credentials
-            if res == None:
-                self.db.close()
-                self.bot.send_message(call.message.chat.id, 'Nessun account configurato per questo corso, fornisci le seguenti informazioni:\n\nEmail:')
-                self.bot.register_next_step_handler(call.message, self.get_email, call.data)
-                return
+                self.set_section(call.data)
+                
+                user_id = call.message.chat.id
+
+                if self.there_is_a_user_configured_for(self.__course):
+
+                    self.save_user_info(user_id, login_credentials=False)
+                    self.bot.send_message(user_id, "Account configurato!")
+                    self.db.close()
+                    return
             
-            # save user into "users_newsletter" table
-            self.save_user_info(call.message.chat.id, call.data, login_credentials=False)
-            
-            self.bot.send_message(call.message.chat.id, "Account configurato!")
-            self.db.close()
+                self.bot.send_message(user_id, 'Nessun account configurato per questo corso, fornisci le seguenti informazioni:\n\nEmail:')
+                self.bot.register_next_step_handler(call.message, self.get_email)
+                    
+
+            else:
+                self.set_course(call.data)
+                self.bot.send_message(call.message.chat.id, "Seleziona anno e sezione", reply_markup=self.create_section_keyboard())
+
             return
 
 
         @self.bot.message_handler(commands=['day'])
         def handle_day(message):
-            id = message.from_user.id
-            self.bot_print(self.day, id)
+            user_id = message.from_user.id
+            
+            self.db.connect()
 
-        @self.bot.message_handler(commands=['register', 'reg'])
-        def handle_registro(message):
-            id = message.from_user.id
-            self.bot_print(self.oldDB, id)
+            res = self.db.query("SELECT course, section FROM users_newsletter WHERE id=?", [user_id])
+            if res == None:
+                self.send_configuration_message()
+                self.db.close()
+                return      
+                  
+            user_course, user_section = res[0], res[1]
+
+            res = self.db.query("SELECT email, psw FROM users_login WHERE course=? AND section=?", [user_course, user_section])
+            if res == None:
+                self.send_configuration_message()
+                self.db.close()
+                return
+            
+            self.register.set_credential(res[0], res[1])
+            self.updateDB(just_today=True)
+
+            self.db.close()
+
+            self.bot_print(self.day, user_id)
+
+        @self.bot.message_handler(commands=['week'])
+        def handle_week(message):
+            user_id = message.from_user.id
+            
+            self.db.connect()
+
+            res = self.db.query("SELECT course, section FROM users_newsletter WHERE id=?", [user_id])
+            if res == None:
+                self.send_configuration_message()
+                self.db.close()
+                return
+                  
+            user_course, user_section = res[0], res[1]
+
+            res = self.db.query("SELECT email, psw FROM users_login WHERE course=? AND section=?", [user_course, user_section])
+            if res == None:
+                self.send_configuration_message()
+                self.db.close()
+                return
+            
+            self.register.set_credential(res[0], res[1])
+            self.updateDB()
+
+            self.db.close()
+
+            self.bot_print(self.oldDB, user_id)
 
         @self.bot.message_handler(commands=['news'])
         def echo_news(message):
@@ -171,11 +235,17 @@ class Bot:
             
             # no need to check if the user is not present, because it is automatically inserted into the db during the config stage
             self.db.query("UPDATE users_newsletter SET can_send_news = 1 WHERE id = ?;", [id])
-            print(f"Set can_send_news to True to user {id}")
 
             self.db.close()
 
-        self.bot.polling()
+        try:    
+            self.bot.polling()
+        except Exception as e:
+            print(e)
+            print("Exception occured, restarting the function")
+            sleep(5)
+            threading.Thread(target=self.handle_messages).start()
+            return
 
 
     def newsletter(self):
@@ -183,20 +253,22 @@ class Bot:
         courses = self.get_courses()
         self.db.connect()
 
+        # per ogni corso, primo e secondo anno, sezioni A e B
         for course in courses:
-            users = self.db.query("SELECT id FROM users_newsletter WHERE course=? and can_send_news=1;", [course])
-            res = self.db.query("SELECT email, psw FROM users_login WHERE course=?;", [course])
-            if res == None: continue
+            for year in {1, 2}:
+                for section in {"A", "B"}:
+                    login_user = self.db.query("SELECT email, psw FROM users_login WHERE course=? and section=? and year=?;", [course, section, year])
+                    if login_user == None: continue
+                    users = self.db.query("SELECT id FROM users_newsletter WHERE course=? and can_send_news=1 and section=? and year=?;", [course, section, year])
 
-            self.user, self.password = res[0], res[1]
-            self.register.set_credential(self.user, self.password)
-            self.updateDB(just_today=True)
+                    self.user, self.password = login_user[0], login_user[1]
+                    self.updateDB(just_today=True)
+                    self.register.set_credential(self.user, self.password)
 
-            for id in users:
-                self.bot_print(self.day, int(id))
+                    for id in users:
+                        self.bot_print(self.day, int(id))
             print(f"Sent news to {course} course")
             
-
         self.db.close()
 
         return
@@ -212,7 +284,6 @@ class Bot:
             newDB = self.register.requestGeop()
             self.oldDB = newDB
         self.day = self.register.requestGeop(date.today(), date.today()+timedelta(days=1))
-
 
     # id: user to send the message to
     def bot_print(self, lessons, id):
@@ -250,3 +321,24 @@ class Bot:
 
             self.bot.send_message(id, msg, parse_mode='Markdown')
         return
+
+
+    def set_course(self, course):
+        self.__course = course
+
+    def set_section(self, section):
+        self.__section = section
+
+
+    def there_is_a_user_configured_for(self, course):
+        self.db.connect()
+        res = self.db.query("SELECT * FROM users_login WHERE course=?;", [course,])
+
+        # if there isn't an account configured for that course, ask for the credentials
+        if res == None:
+            self.db.close()
+            return False
+        
+        self.db.close()
+        return True
+        
