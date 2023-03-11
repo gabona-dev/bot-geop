@@ -3,8 +3,12 @@ import schedule
 import threading
 import os
 import telebot
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 from register import Register
 from time import sleep
+from db import DB
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
 
 class Bot:
     bot = None
@@ -15,29 +19,25 @@ class Bot:
     day = []
     oldDB = []
     register = None
+    db = None
+    __course = ""
+    __section = ""
+    __key = "" # used to crypt and decrypt passwords
 	
     def __init__(self):
         # create bot
         self.token = os.environ['TOKEN']
-        self.user = os.environ['Username']
-        self.password = os.environ['Password']
 
         self.register = Register(self.user, self.password)
         self.bot = telebot.TeleBot(self.token)
 
-        # load user to send automatic messages to
-        with open('userFile.txt') as file:
-            for line in file:
-                line = line.strip()
-                self.id_list.append(int(line))
+        self.__key = os.environ["key"].encode()
 
-        # update bot lessons database
-        self.oldDB = self.register.requestGeop()
-        self.day = self.register.requestGeop(date.today(), date.today()+timedelta(days=1))
+        self.db = DB()
 
-        # scheduling newsletter and updates of lessons database
-        schedule.every(30).minutes.do(self.checkDB)
-        schedule.every().day.at("06:00").do(self.newsletter)
+        # scheduling newsletter and updates of lessons
+        schedule.every(30).minutes.do(self.updateDB)
+        schedule.every().day.at("07:00").do(self.newsletter)
         threading.Thread(target=self.handle_messages).start()
 
 
@@ -46,49 +46,265 @@ class Bot:
             schedule.run_pending()
             sleep(1)
 
+    # Ottenere l'indirizzo email dell'utente
+    def get_email(self, message):
+        email = message.text
+        self.bot.send_message(message.chat.id, 'Password:')
+        self.bot.register_next_step_handler(message, self.get_password, email)
+
+    # Ottenere la password dell'utente
+    def get_password(self, message, email):
+        psw = message.text
+
+        threading.Thread(target=self.delete_msg, args=[message]).start()
+
+        self.register.set_credential(email, psw)
+        self.updateDB()     # updates oldDB variable
+
+        if (self.oldDB == self.register.CONNECTION_ERROR) or (self.oldDB == self.register.ERROR):
+            self.bot.send_message(message.chat.id, "Errore nella configurazione nell'account. Per riprovare esegui il comando /start\n In caso di errore persistente contattta gli admin")
+            return
+
+        if(self.oldDB == self.register.WRONG_PSW):
+            self.bot.send_message(message.chat.id, "Account non configurato: credenziali errate.\nPer riprovare esegui il comando /start")
+            return
+
+        psw = self.encrypt_message(self.__key, psw)
+        self.save_user_info(message.chat.id, email, psw)
+        self.bot.send_message(message.chat.id, 'Account configurato con successo!')
+
+
+    # Funzione per salvare le informazioni dell'utente nel database
+    def save_user_info(self, user_id, email="", psw="", login_credentials=True):
+        self.db.connect()
+
+        if login_credentials:
+            # if user does not already exists in the db then insert it
+            if self.user_already_exists_in('users_login', user_id):
+                self.db.query(
+                    'UPDATE users_login SET course=?, section=? WHERE id=?;',
+                    [self.__course, self.__section, user_id]
+                )
+            else:
+                self.db.query(
+                    'INSERT INTO users_login VALUES (?, ?, ?, ?, ?);', 
+                    (user_id, email, psw, self.__course, self.__section)
+                )
+
+        # if user does not exists in the "user_newsletter" table then insert it
+        if not self.user_already_exists_in('users_newsletter', user_id):
+            self.db.query('INSERT INTO users_newsletter VALUES (?, ?, ?, ?);', [user_id, self.__course, self.__section, False])
+        
+        self.db.close()
+        return
+    
+    
+    def get_courses(self):
+        lines = []
+        with open("courses.txt", "r") as file:
+            lines = file.readlines()
+
+            for i in range(len(lines)):
+                lines[i] = lines[i].replace('\n', '')
+        
+        return lines
+ 
+           
+    # Tastiera inline per la configurazione dell'account
+    def create_courses_keyboard(self):
+
+        keyboard = InlineKeyboardMarkup(row_width=2)
+         
+        courses = self.get_courses()
+
+        #! The number of courses must be even 
+        for i in range(0, len(courses)-1, 2):   # i add 2 buttons in one call, otherwise every button is displayed in a single row
+            keyboard.add(
+                InlineKeyboardButton(f'{courses[i]}', callback_data=f'{courses[i]}'),
+                InlineKeyboardButton(f'{courses[i+1]}', callback_data=f'{courses[i+1]}')
+            )        
+        return keyboard
+    
+    def create_section_keyboard(self):
+        keyboard = InlineKeyboardMarkup(row_width=2)
+
+        for sec in ["A","B"]:
+            keyboard.add(
+                InlineKeyboardButton("1° anno, sez. "+sec, callback_data="1"+sec), 
+                InlineKeyboardButton("2° anno, sez. "+sec, callback_data="2"+sec)
+            )
+        return keyboard
+                
+
+
     def handle_messages(self):
 
         @self.bot.message_handler(commands=['help'])
         def handle_help(message):
             help_msg = \
-            """
-            /help\t\t\tVisualizza questa guida
-            /day\t\t\tLezione più recente
-            /registro, /reg\t\t\tLezione da oggi + 7gg
-            /news\t\t\tNotifica alle 8 sulla lezione del giorno
-            """
+            "/start configura il tuo account" + \
+            "/help Visualizza questa guida\n" + \
+            "/day  Lezione più recente\n" + \
+            "/week  Lezione da oggi + 7gg\n" + \
+            "/news Notifica alle 7 sulla lezione del giorno"
+            
             self.bot.reply_to(message, help_msg)
 
         @self.bot.message_handler(commands=['start'])
-        def handle_start(message):
-            self.bot.reply_to(message, "Benvenuto")
+        def send_welcome(message):
+            self.bot.reply_to(message, "Benvenuto! Per configurare il tuo account, scegli il tuo corso:", reply_markup=self.create_courses_keyboard())
+
+
+        @self.bot.callback_query_handler(func=lambda call: True)
+        def callback_handler(call):
+
+            if call.data == "1A" or  call.data == "1B" or call.data == "2A" or call.data == "2B":
+
+                self.set_section(call.data)
+                
+                user_id = call.message.chat.id
+
+                if self.there_is_a_user_configured_for(self.__course):
+
+                    self.save_user_info(user_id, login_credentials=False)
+                    self.bot.send_message(user_id, "Account configurato!")
+                    self.db.close()
+                    return
+            
+                self.bot.send_message(user_id, 'Nessun account configurato per questo corso, fornisci le seguenti informazioni:\n\nEmail:')
+                self.bot.register_next_step_handler(call.message, self.get_email)
+                    
+
+            else:
+                self.set_course(call.data)
+                self.bot.send_message(call.message.chat.id, "Seleziona anno e sezione", reply_markup=self.create_section_keyboard())
+
+            return
+
 
         @self.bot.message_handler(commands=['day'])
         def handle_day(message):
-            id = message.from_user.id
-            self.bot_print(self.day, id)
+            user_id = message.from_user.id
+            
+            self.db.connect()
 
-        @self.bot.message_handler(commands=['register', 'reg'])
-        def handle_registro(message):
-            id = message.from_user.id
-            self.bot_print(self.oldDB, id)
+            res = self.db.query("SELECT course, section FROM users_newsletter WHERE id=?", [user_id])
+            if res == None:
+                self.send_configuration_message()
+                self.db.close()
+                return      
+                  
+            user_course, user_section = res[0], res[1]
+
+            res = self.db.query("SELECT email, psw FROM users_login WHERE course=? AND section=?", [user_course, user_section])
+            if res == None:
+                self.send_configuration_message()
+                self.db.close()
+                return
+            
+            self.user, self.password = res[0], res[1]
+            self.password = self.decrypt_message(self.__key, self.password)
+            
+            self.register.set_credential(self.user, self.password)
+            self.updateDB(just_today=True)
+
+            self.db.close()
+
+            self.bot_print(self.day, user_id)
+
+        @self.bot.message_handler(commands=['week'])
+        def handle_week(message):
+            user_id = message.from_user.id
+            
+            self.db.connect()
+
+            res = self.db.query("SELECT course, section FROM users_newsletter WHERE id=?", [user_id])
+            if res == None:
+                self.send_configuration_message(user_id)
+                self.db.close()
+                return
+                  
+            user_course, user_section = res[0], res[1]
+
+            res = self.db.query("SELECT email, psw FROM users_login WHERE course=? AND section=?", [user_course, user_section])
+            if res == None:
+                self.send_configuration_message(user_id)
+                self.db.close()
+                return
+            
+            self.user, self.password = res[0], res[1]
+            self.password = self.decrypt_message(self.__key, self.password)
+
+            self.register.set_credential(self.user, self.password)
+            self.updateDB()
+
+            self.db.close()
+
+            self.bot_print(self.oldDB, user_id)
 
         @self.bot.message_handler(commands=['news'])
         def echo_news(message):
-            id = message.from_user.id
-            with open("userFile.txt", "a") as file:
-                if id not in self.id_list:
-                    self.id_list.append(id)
-                    file.write(str(id) + "\n")
-        self.bot.polling()
+            user_id = message.from_user.id
+            self.db.connect()
+
+            res = self.db.query("SELECT * FROM users_newsletter WHERE id=?", [user_id])
+            if res == None:
+                self.send_configuration_message(user_id)
+                self.db.close()
+                return
+            
+            # no need to check if the user is not present, because it is automatically inserted into the db during the config stage
+            self.db.query("UPDATE users_newsletter SET can_send_news = 1 WHERE id = ?;", [user_id])
+
+            self.db.close()
+
+        try:    
+            self.bot.polling()
+        except Exception as e:
+            print(e)
+            print("Exception occured, restarting the function")
+            sleep(5)
+            threading.Thread(target=self.handle_messages).start()
+            return
+
 
     def newsletter(self):
-        for user in self.id_list:
-            self.bot_print(self.day, user)
 
-    def checkDB(self):
-        newDB = self.register.requestGeop()
-        self.oldDB = newDB
+        courses = self.get_courses()
+        self.db.connect()
+
+        # per ogni corso, primo e secondo anno, sezioni A e B
+        for course in courses:
+            for year in {1, 2}:
+                for section in {"A", "B"}:
+                    login_user = self.db.query("SELECT email, psw FROM users_login WHERE course=? and section=? and year=?;", [course, section, year])
+                    if login_user == None: continue
+                    users = self.db.query("SELECT id FROM users_newsletter WHERE course=? and can_send_news=1 and section=? and year=?;", [course, section, year])
+
+                    self.user, self.password = login_user[0], login_user[1]
+                    self.password = self.decrypt_message(self.__key, self.password)
+
+                    self.register.set_credential(self.user, self.password)
+                    self.updateDB(just_today=True)
+
+                    for id in users:
+                        self.bot_print(self.day, int(id))
+            print(f"Sent news to {course} course")
+            
+        self.db.close()
+
+        return
+
+    # Funzione per verificare se le informazioni dell'utente sono già state fornite
+    def user_already_exists_in(self, table, user_id):
+        res = self.db.query(f"SELECT * FROM {table} WHERE id=?;", [user_id,])
+        return res != None
+
+
+    def updateDB(self, just_today=False):
+        if not just_today:
+            newDB = self.register.requestGeop()
+            self.oldDB = newDB
         self.day = self.register.requestGeop(date.today(), date.today()+timedelta(days=1))
 
     # id: user to send the message to
@@ -127,3 +343,42 @@ class Bot:
 
             self.bot.send_message(id, msg, parse_mode='Markdown')
         return
+
+
+    def set_course(self, course):
+        self.__course = course
+
+    def set_section(self, section):
+        self.__section = section
+
+
+    def there_is_a_user_configured_for(self, course):
+        self.db.connect()
+        res = self.db.query("SELECT * FROM users_login WHERE course=?;", [course,])
+
+        # if there isn't an account configured for that course, ask for the credentials
+        if res == None:
+            self.db.close()
+            return False
+        
+        self.db.close()
+        return True
+        
+    def send_configuration_message(self, user_id):
+        self.bot.send_message(user_id, "Configura il tuo account con il comando /start per usare i comandi")
+
+    def delete_msg(self, message):
+        sleep(10)
+        self.bot.delete_message(message.chat.id, message.message_id)
+
+    def encrypt_message(self, key, message):
+        iv = get_random_bytes(AES.block_size)
+        cipher = AES.new(key, AES.MODE_CFB, iv)
+        ciphertext = cipher.encrypt(message.encode('utf-8'))
+        return (iv + ciphertext)
+
+    def decrypt_message(self, key, ciphertext):
+        iv = ciphertext[:AES.block_size]
+        cipher = AES.new(key, AES.MODE_CFB, iv)
+        plaintext = cipher.decrypt(ciphertext[AES.block_size:]).decode('utf-8')
+        return plaintext
